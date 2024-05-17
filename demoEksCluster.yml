@@ -25,8 +25,13 @@ Parameters:
     Default: 2
     MinValue: 1
     MaxValue: 10
+  OidcThumbprint:
+    Description: Thumbprint ID for EKS OIDC
+    Type: String
+    Default: 9e99a48a9960b14926bb7f3b02e22da2b0ab7280
 
 Resources:
+#Eks Cluster
   EksClusterControlPlane:
     Type: AWS::EKS::Cluster
     Properties:
@@ -36,13 +41,13 @@ Resources:
         SecurityGroupIds:
           - !Ref ClusterSecurityGroup
         SubnetIds: !Ref SubnetIds
-
+#cluster security groups
   ClusterSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Security group for the EKS cluster
       VpcId: !Ref VpcId
-
+#IamRoles
   EKSClusterRole:
     Type: AWS::IAM::Role
     Properties:
@@ -56,6 +61,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/AmazonEKSVPCResourceController
   NodeInstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -72,6 +78,58 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
 
+  VpcCniRole:
+    Type: 'AWS::IAM::Role'
+    DependsOn: EksOIDCProvider
+    Properties:
+      RoleName: !Join
+      - ''
+      - - eks-
+        - !Ref ClusterName
+        - '-vpccni'
+      AssumeRolePolicyDocument: !Sub
+      - |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+              {
+                  "Effect": "Allow",
+                  "Principal": {
+                      "Federated": "arn:aws:iam::${AWS::AccountId}:oidc-provider/${OidcProviderEndpoint}"
+                  },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                      "StringEquals": {
+                          "${OidcProviderEndpoint}:sub": "system:serviceaccount:kube-system:aws-node"
+        , "${OidcProviderEndpoint}:aud": "sts.amazonaws.com"
+                      }
+                  }
+              }
+          ]
+        }
+      - OidcProviderEndpoint: !Select
+        - 1
+        - !Split
+          - //
+          - !GetAtt
+            - EksClusterControlPlane
+            - OpenIdConnectIssuerUrl
+      ManagedPolicyArns:
+      - 'arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy'
+
+#OIDC
+  EksOIDCProvider:
+    Type: 'AWS::IAM::OIDCProvider'
+    DependsOn: EksClusterControlPlane
+    Properties:
+      ClientIdList:
+      - sts.amazonaws.com
+      ThumbprintList:
+      - !Ref OidcThumbprint
+      Url: !GetAtt
+      - EksClusterControlPlane
+      - OpenIdConnectIssuerUrl
+#nodeGroup
   NodeGroup:
     Type: AWS::EKS::Nodegroup
     DependsOn: EksClusterControlPlane
@@ -86,6 +144,56 @@ Resources:
         MaxSize: 1
       InstanceTypes:
         - !Ref NodeInstanceType
+#Add-ons
+  CorednsAddon:
+    Type: 'AWS::EKS::Addon'
+    DeletionPolicy: Retain
+    DependsOn: EksClusterControlPlane
+    Properties:
+      AddonName: coredns
+      ClusterName: !Ref ClusterName
+      ResolveConflicts: OVERWRITE
+  VpcCniAddon:
+    Type: 'AWS::EKS::Addon'
+    DeletionPolicy: Retain
+    DependsOn: VpcCniRole
+    Properties:
+      AddonName: vpc-cni
+      #ConfigurationValues: '{"env":{"ENABLE_PREFIX_DELEGATION":"true"}}'
+      ClusterName: !Ref ClusterName
+      ResolveConflicts: OVERWRITE
+      ServiceAccountRoleArn: !GetAtt
+      - VpcCniRole
+      - Arn
+  KubeProxyAddon:
+    Type: 'AWS::EKS::Addon'
+    DeletionPolicy: Retain
+    DependsOn: EksClusterControlPlane
+    Properties:
+      AddonName: kube-proxy
+      ClusterName: !Ref ClusterName
+      ResolveConflicts: OVERWRITE
+#Security groups
+  NodeGroupSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription:
+        Fn::Sub: ${AWS::StackName}-ClusterNodeGroupSG
+      GroupName:
+        Fn::Sub: ${AWS::StackName}-ClusterNodeGroupSG
+      VpcId: !Ref VpcId
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Sub: ${AWS::StackName}/NodeGroupSG
+
+  NodeGroupSecurityGroupIngress:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref NodeGroupSecurityGroup
+      IpProtocol: '-1'
+      Description: Allow within Node group SG
+      SourceSecurityGroupId: !Ref NodeGroupSecurityGroup
 
 Outputs:
   ClusterNameOutput:
@@ -94,3 +202,8 @@ Outputs:
   NodeGroupNameOutput:
     Description: Name of the EKS node group
     Value: !Ref NodeGroupName
+  OpenIdConnectIssuerUrl:
+    Description: Gravity Cluster OpenIdConnectIssuerUrl
+    Value: !GetAtt
+    - EksClusterControlPlane
+    - OpenIdConnectIssuerUrl
