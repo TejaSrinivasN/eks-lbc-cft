@@ -18,11 +18,11 @@ Parameters:
   NodeInstanceType:
     Type: String
     Description: EC2 instance type for the worker nodes
-    Default: t3.medium
+    Default: t3.small
   DesiredCapacity:
     Type: Number
     Description: Desired number of worker nodes
-    Default: 2
+    Default: 1
     MinValue: 1
     MaxValue: 10
   OidcThumbprint:
@@ -38,15 +38,8 @@ Resources:
       Name: !Ref ClusterName
       RoleArn: !GetAtt EKSClusterRole.Arn
       ResourcesVpcConfig:
-        SecurityGroupIds:
-          - !Ref ClusterSecurityGroup
         SubnetIds: !Ref SubnetIds
-#cluster security groups
-  ClusterSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Security group for the EKS cluster
-      VpcId: !Ref VpcId
+
 #IamRoles
   EKSClusterRole:
     Type: AWS::IAM::Role
@@ -61,7 +54,6 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
-        - arn:aws:iam::aws:policy/AmazonEKSVPCResourceController
   NodeInstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -173,27 +165,6 @@ Resources:
       AddonName: kube-proxy
       ClusterName: !Ref ClusterName
       ResolveConflicts: OVERWRITE
-#Security groups
-  NodeGroupSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription:
-        Fn::Sub: ${AWS::StackName}-ClusterNodeGroupSG
-      GroupName:
-        Fn::Sub: ${AWS::StackName}-ClusterNodeGroupSG
-      VpcId: !Ref VpcId
-      Tags:
-      - Key: Name
-        Value:
-          Fn::Sub: ${AWS::StackName}/NodeGroupSG
-
-  NodeGroupSecurityGroupIngress:
-    Type: 'AWS::EC2::SecurityGroupIngress'
-    Properties:
-      GroupId: !Ref NodeGroupSecurityGroup
-      IpProtocol: '-1'
-      Description: Allow within Node group SG
-      SourceSecurityGroupId: !Ref NodeGroupSecurityGroup
 
 Outputs:
   ClusterNameOutput:
@@ -203,7 +174,7 @@ Outputs:
     Description: Name of the EKS node group
     Value: !Ref NodeGroupName
   OpenIdConnectIssuerUrl:
-    Description: Gravity Cluster OpenIdConnectIssuerUrl
+    Description: Cluster OpenIdConnectIssuerUrl
     Value: !GetAtt
     - EksClusterControlPlane
     - OpenIdConnectIssuerUrl
